@@ -16,12 +16,8 @@ class DeltaKinematics:
         stepper_configs = [config.getsection('stepper_' + n)
                            for n in ['a', 'b', 'c']]
         stepper_a = stepper.PrinterHomingStepper(printer, stepper_configs[0])
-        stepper_b = stepper.PrinterHomingStepper(
-            printer, stepper_configs[1],
-            default_position=stepper_a.position_endstop)
-        stepper_c = stepper.PrinterHomingStepper(
-            printer, stepper_configs[2],
-            default_position=stepper_a.position_endstop)
+        stepper_b = stepper.PrinterHomingStepper(printer, stepper_configs[1])
+        stepper_c = stepper.PrinterHomingStepper(printer, stepper_configs[2])
         self.steppers = [stepper_a, stepper_b, stepper_c]
         self.need_motor_enable = self.need_home = True
         self.radius = radius = config.getfloat('delta_radius', above=0.)
@@ -32,6 +28,7 @@ class DeltaKinematics:
         self.arm2 = [arm**2 for arm in arm_lengths]
         self.endstops = [s.position_endstop + math.sqrt(arm2 - radius**2)
                          for s, arm2 in zip(self.steppers, self.arm2)]
+        logging.info("Delta endstops: %s", self.endstops)
         self.limit_xy2 = -1.
         self.max_z = min([s.position_endstop for s in self.steppers])
         self.min_z = config.getfloat('position_min', 0, maxval=self.max_z)
@@ -52,9 +49,11 @@ class DeltaKinematics:
         self.angles = [sconfig.getfloat('angle', angle)
                        for sconfig, angle in zip(stepper_configs,
                                                  [210., 330., 90.])]
+        logging.info("Delta angles: %s", self.angles)
         self.towers = [(math.cos(math.radians(angle)) * radius,
                         math.sin(math.radians(angle)) * radius)
                        for angle in self.angles]
+        logging.info("Delta towers: %s", self.towers)
         # Find the point where an XY move could result in excessive
         # tower movement
         half_min_step_dist = min([s.step_dist for s in self.steppers]) * .5

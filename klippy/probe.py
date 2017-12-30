@@ -18,6 +18,12 @@ class PrinterProbe:
         self.z_distance = config.getfloat('max_distance', 20.0)
         self.mcu_probe = pins.setup_pin(printer, 'endstop', config.get('pin'))
         self.toolhead = printer.objects['toolhead']
+        self.offset_x = config.getfloat('offset_x', 0.0)
+        self.offset_y = config.getfloat('offset_y', 0.0)
+        self.offset_z = config.getfloat('offset_z', 0.0)
+        self.probe_height = config.getfloat('probe_height', 15.0)
+        self.delta_default_radius = config.getfloat('delta_default_radius', 50.0)
+        self.delta_default_speed = config.getfloat('delta_default_speed', 50.0)
         z_steppers = self.toolhead.get_kinematics().get_steppers("Z")
         for s in z_steppers:
             for mcu_endstop, name in s.get_endstops():
@@ -55,19 +61,20 @@ class PrinterProbe:
             "probe: %s" % (["open", "TRIGGERED"][not not res],))
     cmd_DELTA_CALIBRATE_help = "Do probe based delta calibration"
     def cmd_DELTA_CALIBRATE(self, params):
-        radius = self.gcode.get_float('RADIUS', params)
-        speed = self.gcode.get_float('SPEED', params, 50.)
+        radius = self.gcode.get_float('RADIUS', params, self.delta_default_radius)
+        speed = self.gcode.get_float('SPEED', params, self.delta_default_speed)
         self.gcode.cmd_G28({})
-        calibrator = delta_probe_position(self.printer, radius, speed, 5.)
+        calibrator = delta_probe_position(self.printer, radius, speed, self.probe_height, [self.offset_x, self.offset_y, self.offset_z])
         while calibrator.busy:
             self.cmd_PROBE({})
             calibrator.cmd_NEXT({})
+        self.gcode.respond_info("Calibration results: %s" % calibrator.calibration_params)
     cmd_DELTA_MANUAL_help = "Do manual delta calibration"
     def cmd_DELTA_MANUAL(self, params):
-        radius = self.gcode.get_float('RADIUS', params)
-        speed = self.gcode.get_float('SPEED', params, 50.)
+        radius = self.gcode.get_float('RADIUS', params, self.delta_default_radius)
+        speed = self.gcode.get_float('SPEED', params, self.delta_default_speed)
         self.gcode.cmd_G28({})
-        calibrator = delta_probe_position(self.printer, radius, speed, 5.)
+        calibrator = delta_probe_position(self.printer, radius, speed, self.probe_height, [self.offset_x, self.offset_y, self.offset_z])
 
 
 ######################################################################
@@ -75,25 +82,27 @@ class PrinterProbe:
 ######################################################################
 
 class delta_probe_position:
-    def __init__(self, printer, radius, speed, start_height):
+    def __init__(self, printer, radius, speed, start_height, offsets):
         self.printer = printer
         self.radius = radius
         self.speed = speed
         self.start_height = start_height
+        self.offsets = offsets
         self.toolhead = self.printer.objects['toolhead']
         self.gcode = printer.objects['gcode']
         self.gcode.register_command(
             'NEXT', self.cmd_NEXT, desc=self.cmd_NEXT_help)
-        points = [(0., 0.)]
+        points = [(0. - self.offsets[0], 0. - self.offsets[1])]
         scatter = [.95, .90, .85, .70, .75, .80]
         for i in range(6):
             r = math.radians(90. + 60. * i)
             dist = radius * scatter[i]
-            points.append((math.cos(r) * dist, math.sin(r) * dist))
+            points.append((math.cos(r) * dist - self.offsets[0], math.sin(r) * dist - self.offsets[1]))
         self.probe_points = points
         self.results = []
         self.busy = True
         self.move_next()
+        self.calibration_params = []
     def move_next(self):
         x, y = self.probe_points[len(self.results)]
         curpos = self.toolhead.get_position()
@@ -107,7 +116,10 @@ class delta_probe_position:
         # Record current position
         self.toolhead.wait_moves()
         kin = self.toolhead.get_kinematics()
-        self.results.append(kin.get_stable_position())
+        stable_pos = kin.get_stable_position()
+        stable_pos = [p-self.offsets[2] for p in stable_pos]
+        logging.debug("Stable: %s", stable_pos)
+        self.results.append(stable_pos)
         # Move to next position
         curpos = self.toolhead.get_position()
         curpos[2] = self.start_height
@@ -135,6 +147,7 @@ class delta_probe_position:
             return total_error
         new_params = coordinate_descent(adj_params, params, delta_errorfunc)
         logging.debug("Got2: %s", new_params)
+        self.calibration_params = new_params
         for spos in self.results:
             logging.debug("orig: %s new: %s",
                           delta.get_position_from_stable(spos, params),
